@@ -1,4 +1,4 @@
-from Compiler.types import sint, sfix, cint, regint, Array
+from Compiler.types import sint, Array
 from Compiler.library import print_ln
 
 # ------------------------------------------------------------
@@ -7,199 +7,229 @@ from Compiler.library import print_ln
 N_ASSETS = 1 
 N_PARTIES = 3        
 N_ORDERS = 10         
-VERBOSE = False
+VERBOSE = True
 
 # ------------------------------------------------------------
-# Function clearing price and transaction volume
+# Bubble sort
 # ------------------------------------------------------------
-def clearing_price(demand, supply, min_price, max_price):
+def bubble_sort(prices, qties, ask_prices, ask_qties, n):
+    for i in range(n):
+        for j in range(n - 1):
+            swap = prices[j] > prices[j+1]
+            
+            temp_price = prices[j]
+            prices[j] = swap.if_else(prices[j+1], prices[j])
+            prices[j+1] = swap.if_else(temp_price, prices[j+1])
+            
+            temp_qty = qties[j]
+            qties[j] = swap.if_else(qties[j+1], qties[j])
+            qties[j+1] = swap.if_else(temp_qty, qties[j+1])
+            
+            swap = ask_prices[j] < ask_prices[j+1]
 
-    tamanho = max_price - min_price + 1
-    best_volume = sint(0)
-    best_price_low = sint(0)
-    best_price_high = sint(0)
+            temp_ask = ask_prices[j]
+            ask_prices[j] = swap.if_else(ask_prices[j+1], ask_prices[j])
+            ask_prices[j+1] = swap.if_else(temp_ask, ask_prices[j+1])
+            
+            temp_ask_qty = ask_qties[j]
+            ask_qties[j] = swap.if_else(ask_qties[j+1], ask_qties[j])
+            ask_qties[j+1] = swap.if_else(temp_ask_qty, ask_qties[j+1])
     
-    for idx in range(tamanho):
-        p = min_price + idx
-        volume = sint.min(demand[idx], supply[idx])
-        
-        is_better = volume > best_volume
-        best_volume = is_better * volume + (1 - is_better) * best_volume
-        best_price_low = is_better * p + (1 - is_better) * best_price_low
-        best_price_high = is_better * p + (1 - is_better) * best_price_high
-        
-        is_equal = volume == best_volume
-        new_low = sint.min(best_price_low, p)
-        new_high = sint.max(best_price_high, p)
-        best_price_low = is_equal * new_low + (1 - is_equal) * best_price_low
-        best_price_high = is_equal * new_high + (1 - is_equal) * best_price_high
-    
-    clearing_price = (best_price_low + best_price_high) / 2
-    
-    return clearing_price, best_volume
+    return prices, qties, ask_prices, ask_qties
+
 
 # ------------------------------------------------------------
-# Pro-rata allocation (safe)
+# Pro-rata allocation 
 # ------------------------------------------------------------
+
+
 def pro_rata_fills(quantities, total_eligible, volume):
     fills = [sint(0) for _ in range(len(quantities))]
     allocated = sint(0)
 
-    # evitar divisão por zero
     safe_total = total_eligible + (total_eligible == 0)
 
     for i in range(len(quantities)):
-        fills[i] = (quantities[i] * volume) / safe_total
+        # int_div(a, b, k) - divis  o inteira com k bits
+        fills[i] = (quantities[i] * volume).int_div(safe_total, 32)
         allocated += fills[i]
-    
+
     residual = volume - allocated
     fills[0] += residual
 
     return fills
 
 
-def vprint_ln(*args):
-    if VERBOSE:
-        print_ln(*args)
 
 
-def print_curve(title, curve, max_price):
-    vprint_ln(title)
-    for price in range(max_price + 1):
-        vprint_ln("  Price %s -> %s", price, curve[price].reveal())
+# ------------------------------------------------------------
+# CLEARING PRICE
+# ------------------------------------------------------------
+def clearing_price(demand, supply, prices, n):
+    print_ln("\nComputing clearing price...")
+    
+    # First, find maximum volume
+    best_volume = sint(0)
+    
+    for i in range(n):
+        volume = sint.min(demand[i], supply[i])
+        is_better = volume > best_volume
+        best_volume = is_better.if_else(volume, best_volume)
+    
+    print_ln("Maximum volume: %s", best_volume.reveal())
+    
+    # Find first and last price that achieve best_volume
+    first_price = sint(0)
+    last_price = sint(0)
+    found = sint(0)
+    
+    for i in range(n):
+        volume = sint.min(demand[i], supply[i])
+        is_max = (volume == best_volume)
+        
+        # First price (lowest index)
+        is_first = (found == 0) & is_max
+        first_price = is_first.if_else(prices[i], first_price)
+        
+        # Always update last_price when is_max is true
+        last_price = is_max.if_else(prices[i], last_price)
+        
+        found = found + is_max
+    
+    # Midpoint of the plateau
+    clearing_price = (first_price + last_price) / 2
+    
+    print_ln("\n=== Results ===")
+    print_ln("Clearing price (midpoint): %s", clearing_price.reveal())
+    print_ln("Transaction volume: %s", best_volume.reveal())
+    
+    return clearing_price, best_volume
+
 
 # ------------------------------------------------------------
 # Main
 # ------------------------------------------------------------
 def main():
     print_ln("\n=== Dark Auction with MPC ===\n")
-    print_ln("Step 1: Reading inputs...")
     
-    # initialize arrays for bids and asks
-    bids_price = [[Array(N_ORDERS, sint) for _ in range(N_ASSETS)] for _ in range(N_PARTIES)]
-    bids_qty   = [[Array(N_ORDERS, sint) for _ in range(N_ASSETS)] for _ in range(N_PARTIES)]
-    asks_price = [[Array(N_ORDERS, sint) for _ in range(N_ASSETS)] for _ in range(N_PARTIES)]
-    asks_qty   = [[Array(N_ORDERS, sint) for _ in range(N_ASSETS)] for _ in range(N_PARTIES)]
-
+    TOTAL_ORDERS = N_ORDERS * N_PARTIES * N_ASSETS
+    print_ln("Total orders aggregated: %s", TOTAL_ORDERS)
+    
+    # Read inputs
+    bid_prices = Array(TOTAL_ORDERS, sint)
+    bid_qties = Array(TOTAL_ORDERS, sint)
+    ask_prices = Array(TOTAL_ORDERS, sint)
+    ask_qties = Array(TOTAL_ORDERS, sint)
+    
+    print_ln("Reading inputs...")
+    
+    idx = 0
     for party in range(N_PARTIES):
         for asset in range(N_ASSETS):
-            bids_price[party][asset].assign_all(0)
-            bids_qty[party][asset].assign_all(0)
-            asks_price[party][asset].assign_all(0)
-            asks_qty[party][asset].assign_all(0)
-    
-    # read inputs from parties
-    for party in range(N_PARTIES):
-        for asset in range(N_ASSETS):
-            vprint_ln("Reading Party %s, Asset %s...", party, asset)
             for order in range(N_ORDERS):
-                bids_price[party][asset][order] = sint.get_input_from(party)
-                bids_qty[party][asset][order] = sint.get_input_from(party)
-                asks_price[party][asset][order] = sint.get_input_from(party)
-                asks_qty[party][asset][order] = sint.get_input_from(party)
+                bid_prices[idx] = sint.get_input_from(party)
+                bid_qties[idx] = sint.get_input_from(party)
+                ask_prices[idx] = sint.get_input_from(party)
+                ask_qties[idx] = sint.get_input_from(party)
                 
-                vprint_ln(
-                    "  Order %s -> bid price: %s | bid qty: %s | ask price: %s | ask qty: %s",
-                    order,
-                    bids_price[party][asset][order].reveal(),
-                    bids_qty[party][asset][order].reveal(),
-                    asks_price[party][asset][order].reveal(),
-                    asks_qty[party][asset][order].reveal()
-                
-                )
-                
-        vprint_ln("Party_finished")
-    
-    # Per-asset price ranges (public knowledge)
-    max_price = [15]   # single asset, max price
-    min_price = [5]    # single asset, min price
-
-    cummulative_demand = [Array(max_price[a] - min_price[a] + 1, sint) for a in range(N_ASSETS)]
-    supply             = [Array(max_price[a] - min_price[a] + 1, sint) for a in range(N_ASSETS)]
-    cummulative_demand_party = [[Array(max_price[a] - min_price[a] + 1, sint) for a in range(N_ASSETS)] for p in range(N_PARTIES)]
-    supply_party             = [[Array(max_price[a] - min_price[a] + 1, sint) for a in range(N_ASSETS)] for p in range(N_PARTIES)]
-
-    vprint_ln("Step 2: Building cummulative_demand/supply curves...")
-
-    for a in range(N_ASSETS):
-        print_ln("  assign_all demand asset %s", a)
-        cummulative_demand[a].assign_all(0)
-        print_ln("  assign_all supply asset %s", a)
-        supply[a].assign_all(0)
-
-    for p in range(N_PARTIES):
-        for a in range(N_ASSETS):
-            print_ln("  assign_all party %s asset %s", p, a)
-            cummulative_demand_party[p][a].assign_all(0)
-            supply_party[p][a].assign_all(0)
-                
-    print_ln("cummulative_demand_party and supply_party initialized")
-
-    for p in range(N_PARTIES):
-        for a in range(N_ASSETS):
-            for j in range(max_price[a] - min_price[a] + 1):
-                actual_price = min_price[a] + j
-                d_total = sint(0)
-                s_total = sint(0)
-                for i in range(N_ORDERS):
-                    d_mask = (bids_price[p][a][i] >= actual_price)
-                    s_mask = (asks_price[p][a][i] <= actual_price)
-                    d_total += d_mask * bids_qty[p][a][i]
-                    s_total += s_mask * asks_qty[p][a][i]
-                cummulative_demand[a][j] = cummulative_demand[a][j] + d_total
-                cummulative_demand_party[p][a][j] = d_total
-                supply[a][j] = supply[a][j] + s_total
-                supply_party[p][a][j] = s_total
-                    
-    
-    print_ln("Step 4: Computing clearing prices and allocations...")
-    
-    # Clearing + allocation
-    for a in range(N_ASSETS):
-        print_ln("  Processing Asset %s...", a)
-        cp, volume_result = clearing_price(cummulative_demand[a], supply[a], 0, max_price[a] - min_price[a])
-
-        print_ln("\n=== Results ===")
-        print_ln("Clearing price: %s", cp.reveal())
-        print_ln("Transaction volume: %s", volume_result.reveal())  
-
-        eligible_qties_bids = []
-        eligible_qties_asks = []
-
-        demand_at_cp = sint(0)
-        supply_at_cp = sint(0)
-
-        for party in range(N_PARTIES):
-            for i in range(N_ORDERS):
-                mask_bid = (bids_price[party][a][i] >= cp)
-                mask_ask = (asks_price[party][a][i] <= cp)
-
-                eligible_qties_bids.append(mask_bid * bids_qty[party][a][i])
-                eligible_qties_asks.append(mask_ask * asks_qty[party][a][i])
-
-                demand_at_cp += mask_bid * bids_qty[party][a][i]
-                supply_at_cp += mask_ask * asks_qty[party][a][i]
-
-        total_eligible_bids = sint(0)
-        for qty in eligible_qties_bids:
-            total_eligible_bids += qty
-
-        total_eligible_asks = sint(0)
-        for qty in eligible_qties_asks:
-            total_eligible_asks += qty
-
-        volume_to_fill = sint.min(demand_at_cp, supply_at_cp)
-        is_demand_higher = (demand_at_cp > supply_at_cp)
-
-        fills_bids = pro_rata_fills(eligible_qties_bids, total_eligible_bids, volume_to_fill)
-        fills_asks = pro_rata_fills(eligible_qties_asks, total_eligible_asks, volume_to_fill)
-
-        print_ln("\nRationing results:")
-        idx = 0
-        for party in range(N_PARTIES):
-            for i in range(N_ORDERS):
-                final_fill = is_demand_higher * fills_bids[idx] + (1 - is_demand_higher) * fills_asks[idx]
-                print_ln("  Party %s Order %s: %s units", party, i, final_fill.reveal())
+                if VERBOSE:
+                    print_ln("Order %s (P%s): bid=%s/%s ask=%s/%s", 
+                             idx, party,
+                             bid_prices[idx].reveal(),
+                             bid_qties[idx].reveal(),
+                             ask_prices[idx].reveal(),
+                             ask_qties[idx].reveal())
                 idx += 1
+    
+    # Sort all orders by bid price (descending)
+    print_ln("Sorting orders by bid price...")
+    
+    sorted_prices = Array(TOTAL_ORDERS, sint)
+    sorted_bid_qties = Array(TOTAL_ORDERS, sint)
+    sorted_ask_prices = Array(TOTAL_ORDERS, sint)
+    sorted_ask_qties = Array(TOTAL_ORDERS, sint)
+    
+    sorted_prices, sorted_bid_qties, sorted_ask_prices, sorted_ask_qties = bubble_sort(
+        bid_prices, bid_qties, ask_prices, ask_qties, TOTAL_ORDERS
+    )
+    
+    # ============================================================
+    # BUILD DEMAND AND SUPPLY CURVES
+    # ============================================================
+    print_ln("Building demand/supply curves...")
+    
+    # Cumulative demand 
+    demand = Array(TOTAL_ORDERS, sint)
+    cumulative_bids = sint(0)
+    
+    for i in range(TOTAL_ORDERS - 1, -1, -1):
+        cumulative_bids += sorted_bid_qties[i]
+        demand[i] = cumulative_bids
+    
+    # Cumulative supply 
+    supply = Array(TOTAL_ORDERS, sint)
+    
+    for i in range(TOTAL_ORDERS):
+        price_level = sorted_prices[i]
+        cumulative_supply = sint(0)
+        
+        # Sum all asks with price <= current bid price level
+        for j in range(TOTAL_ORDERS):
+            cumulative_supply += (sorted_ask_prices[j] <= price_level) * sorted_ask_qties[j]
+        
+        supply[i] = cumulative_supply
+    
+    if VERBOSE:
+        print_ln("\nDemand/Supply curve:")
+        for i in range(TOTAL_ORDERS):
+            print_ln("Price %s: demand=%s supply=%s", 
+                     sorted_prices[i].reveal(),
+                     demand[i].reveal(),
+                     supply[i].reveal())
+
+                     
+    
+    print_ln("\nComputing clearing price...")
+    cp, volume_result = clearing_price(demand, supply, sorted_prices, TOTAL_ORDERS)
+    
+    # ============================================================
+    # PRO-RATA ALLOCATIONS
+    # ============================================================
+
+    print_ln("\nComputing pro-rata allocations...")
+
+    total_eligible_bids = sint(0)
+    total_eligible_asks = sint(0)
+    # Prepare quantities for both sides
+    bid_quantities = [sint(0) for _ in range(TOTAL_ORDERS)]
+    ask_quantities = [sint(0) for _ in range(TOTAL_ORDERS)]
+
+    for i in range(TOTAL_ORDERS):
+        is_eligible_bid = (sorted_prices[i] >= cp)
+        is_eligible_ask = (sorted_ask_prices[i] <= cp)
+    
+        total_eligible_bids += is_eligible_bid * sorted_bid_qties[i]
+        total_eligible_asks += is_eligible_ask * sorted_ask_qties[i]
+        bid_quantities[i] = is_eligible_bid * sorted_bid_qties[i]
+        ask_quantities[i] = is_eligible_ask * sorted_ask_qties[i]
+
+    is_demand_higher = total_eligible_bids > total_eligible_asks
+    volume_to_fill = sint.min(total_eligible_bids, total_eligible_asks)
+
+    
+
+    # Calculate fills for both sides
+    bid_fills = pro_rata_fills(bid_quantities, total_eligible_bids, volume_to_fill)
+    ask_fills = pro_rata_fills(ask_quantities, total_eligible_asks, volume_to_fill)
+
+    # Choose correct fills based on which side is constrained
+    for i in range(TOTAL_ORDERS):
+        final_fill = is_demand_higher.if_else(bid_fills[i], ask_fills[i])
+        print_ln("Order %s: %s units", i, final_fill.reveal())
+
+    print_ln("\n=== Auction Summary ===")
+    print_ln("Clearing Price: %s", cp.reveal())
+    print_ln("Total Volume: %s", volume_to_fill.reveal())
+    
 
 main()
