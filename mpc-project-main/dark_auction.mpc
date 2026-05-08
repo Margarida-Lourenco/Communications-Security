@@ -1,4 +1,4 @@
-from Compiler.types import sint, Array
+from Compiler.types import sint, sfix, Array
 from Compiler.library import print_ln
 
 # ------------------------------------------------------------
@@ -6,36 +6,51 @@ from Compiler.library import print_ln
 # ------------------------------------------------------------
 N_ASSETS = 1 
 N_PARTIES = 3        
-N_ORDERS = 10         
+N_ORDERS = 2         
 VERBOSE = True
 
-# ------------------------------------------------------------
-# Bubble sort
-# ------------------------------------------------------------
-def bubble_sort(prices, qties, ask_prices, ask_qties, n):
-    for i in range(n):
-        for j in range(n - 1):
-            swap = prices[j] > prices[j+1]
-            
-            temp_price = prices[j]
-            prices[j] = swap.if_else(prices[j+1], prices[j])
-            prices[j+1] = swap.if_else(temp_price, prices[j+1])
-            
-            temp_qty = qties[j]
-            qties[j] = swap.if_else(qties[j+1], qties[j])
-            qties[j+1] = swap.if_else(temp_qty, qties[j+1])
-            
-            swap = ask_prices[j] < ask_prices[j+1]
 
-            temp_ask = ask_prices[j]
-            ask_prices[j] = swap.if_else(ask_prices[j+1], ask_prices[j])
-            ask_prices[j+1] = swap.if_else(temp_ask, ask_prices[j+1])
-            
-            temp_ask_qty = ask_qties[j]
-            ask_qties[j] = swap.if_else(ask_qties[j+1], ask_qties[j])
-            ask_qties[j+1] = swap.if_else(temp_ask_qty, ask_qties[j+1])
-    
-    return prices, qties, ask_prices, ask_qties
+# Calculate next power of two for bitonic sort padding
+def next_power_of_two(value):
+    result = 1
+    while result < value:
+        result *= 2
+    return result
+
+# ------------------------------------------------------------
+# Bitonic sort
+# ------------------------------------------------------------
+def compare_and_swap(prices, qties, i, j, ascending):
+    if ascending:
+        swap = prices[i] > prices[j]
+    else:
+        swap = prices[i] < prices[j]
+
+    temp_price = prices[i]
+    prices[i] = swap.if_else(prices[j], prices[i])
+    prices[j] = swap.if_else(temp_price, prices[j])
+
+    temp_qty = qties[i]
+    qties[i] = swap.if_else(qties[j], qties[i])
+    qties[j] = swap.if_else(temp_qty, qties[j])
+
+
+def bitonic_sort(prices, qties, n, ascending=True):
+    size = 2
+    while size <= n:
+        step = size // 2
+        while step > 0:
+            for i in range(n):
+                j = i ^ step
+                if j > i:
+                    up = (i & size) == 0
+                    if not ascending:
+                        up = not up
+                    compare_and_swap(prices, qties, i, j, up)
+            step //= 2
+        size *= 2
+
+    return prices, qties
 
 
 # ------------------------------------------------------------
@@ -65,45 +80,51 @@ def pro_rata_fills(quantities, total_eligible, volume):
 # ------------------------------------------------------------
 # CLEARING PRICE
 # ------------------------------------------------------------
-def clearing_price(demand, supply, prices, n):
-    print_ln("\nComputing clearing price...")
-    
-    # First, find maximum volume
+def clearing_price(demand, supply, price_levels, prices_bid, prices_ask, bid_qties, ask_qties, n_levels, n_orders):
+
+    def volume_at_price(price):
+        """Cumulative demand/supply at a given price level."""
+        dem = sum((prices_bid[j] >= price) * bid_qties[j] for j in range(n_orders))
+        sup = sum((prices_ask[j] <= price) * ask_qties[j] for j in range(n_orders))
+        return sint.min(dem, sup)
+
+    def update_bounds(p_low, p_high, price, volume):
+        """Branchless min/max update when volume == best_volume."""
+        is_max = volume == best_volume
+        p_low  = is_max.if_else(sint.min(p_low, price), p_low)
+        p_high = is_max.if_else(sint.max(p_high, price), p_high)
+        return p_low, p_high
+
+    # Step 1: best tradeable volume across bid price levels
     best_volume = sint(0)
-    
-    for i in range(n):
-        volume = sint.min(demand[i], supply[i])
-        is_better = volume > best_volume
-        best_volume = is_better.if_else(volume, best_volume)
-    
-    print_ln("Maximum volume: %s", best_volume.reveal())
-    
-    # Find first and last price that achieve best_volume
-    first_price = sint(0)
-    last_price = sint(0)
-    found = sint(0)
-    
-    for i in range(n):
-        volume = sint.min(demand[i], supply[i])
-        is_max = (volume == best_volume)
-        
-        # First price (lowest index)
-        is_first = (found == 0) & is_max
-        first_price = is_first.if_else(prices[i], first_price)
-        
-        # Always update last_price when is_max is true
-        last_price = is_max.if_else(prices[i], last_price)
-        
-        found = found + is_max
-    
-    # Midpoint of the plateau
-    clearing_price = (first_price + last_price) / 2
-    
-    print_ln("\n=== Results ===")
-    print_ln("Clearing price (midpoint): %s", clearing_price.reveal())
-    print_ln("Transaction volume: %s", best_volume.reveal())
-    
-    return clearing_price, best_volume
+    for i in range(n_levels):
+        vol = sint.min(demand[i], supply[i])
+        best_volume = (vol > best_volume).if_else(vol, best_volume)
+
+    # Step 2: price plateau bounds across all price levels
+    p_low, p_high = sint(10**9), sint(-1)
+
+    for i in range(n_levels):
+        p_low, p_high = update_bounds(p_low, p_high, price_levels[i],
+                                      sint.min(demand[i], supply[i]))
+
+    for i in range(n_levels):
+        p_low, p_high = update_bounds(p_low, p_high, price_levels[i],
+                                      volume_at_price(price_levels[i]))
+
+    # Step 3: clearing price as midpoint of plateau
+    cp = (sfix(p_low) + sfix(p_high)) / sfix(2)
+
+    if VERBOSE:
+        print_ln("\n--- Demand/Supply Curve ---")
+        for i in range(n_levels):
+            print_ln("  Price %s: demand=%s supply=%s",
+                     price_levels[i].reveal(), demand[i].reveal(), supply[i].reveal())
+        print_ln("Best volume : %s", best_volume.reveal())
+        print_ln("p_low/p_high: %s / %s", p_low.reveal(), p_high.reveal())
+        print_ln("Clearing price: %s | Volume: %s", cp.reveal(), best_volume.reveal())
+
+    return cp, best_volume
 
 
 # ------------------------------------------------------------
@@ -113,13 +134,14 @@ def main():
     print_ln("\n=== Dark Auction with MPC ===\n")
     
     TOTAL_ORDERS = N_ORDERS * N_PARTIES * N_ASSETS
+    SORT_SIZE = next_power_of_two(TOTAL_ORDERS)
     print_ln("Total orders aggregated: %s", TOTAL_ORDERS)
     
     # Read inputs
-    bid_prices = Array(TOTAL_ORDERS, sint)
-    bid_qties = Array(TOTAL_ORDERS, sint)
-    ask_prices = Array(TOTAL_ORDERS, sint)
-    ask_qties = Array(TOTAL_ORDERS, sint)
+    bid_prices = Array(SORT_SIZE, sint)
+    bid_qties = Array(SORT_SIZE, sint)
+    ask_prices = Array(SORT_SIZE, sint)
+    ask_qties = Array(SORT_SIZE, sint)
     
     print_ln("Reading inputs...")
     
@@ -140,58 +162,89 @@ def main():
                              ask_prices[idx].reveal(),
                              ask_qties[idx].reveal())
                 idx += 1
+
+    # Pad the arrays up to the next power of two so bitonic sort can run.
+    # The extra entries are dummy orders: zero quantity means they do not
+    # affect the auction, and the extreme prices push them to the end.
+    for idx in range(TOTAL_ORDERS, SORT_SIZE):
+        bid_prices[idx] = sint(-1)
+        bid_qties[idx] = sint(0)
+        ask_prices[idx] = sint(10**9)
+        ask_qties[idx] = sint(0)
     
-    # Sort all orders by bid price (descending)
-    print_ln("Sorting orders by bid price...")
+    # Sort bids descending and asks ascending using bitonic sort
+    print_ln("Sorting orders with bitonic sort...")
     
-    sorted_prices = Array(TOTAL_ORDERS, sint)
-    sorted_bid_qties = Array(TOTAL_ORDERS, sint)
-    sorted_ask_prices = Array(TOTAL_ORDERS, sint)
-    sorted_ask_qties = Array(TOTAL_ORDERS, sint)
-    
-    sorted_prices, sorted_bid_qties, sorted_ask_prices, sorted_ask_qties = bubble_sort(
-        bid_prices, bid_qties, ask_prices, ask_qties, TOTAL_ORDERS
-    )
+    sorted_prices, sorted_bid_qties = bitonic_sort(bid_prices, bid_qties, SORT_SIZE, ascending=False)
+    sorted_ask_prices, sorted_ask_qties = bitonic_sort(ask_prices, ask_qties, SORT_SIZE, ascending=True)
+
+    # Debug: reveal full sorted lists (including padded entries) to verify ordering
+    if VERBOSE:
+        print_ln("\n--- Sorted bids (index: price/qty) ---")
+        for i in range(SORT_SIZE):
+            print_ln("%s: %s / %s", i, sorted_prices[i].reveal(), sorted_bid_qties[i].reveal())
+
+        print_ln("\n--- Sorted asks (index: price/qty) ---")
+        for i in range(SORT_SIZE):
+            print_ln("%s: %s / %s", i, sorted_ask_prices[i].reveal(), sorted_ask_qties[i].reveal())
     
     # ============================================================
     # BUILD DEMAND AND SUPPLY CURVES
     # ============================================================
     print_ln("Building demand/supply curves...")
-    
-    # Cumulative demand 
-    demand = Array(TOTAL_ORDERS, sint)
-    cumulative_bids = sint(0)
-    
-    for i in range(TOTAL_ORDERS - 1, -1, -1):
-        cumulative_bids += sorted_bid_qties[i]
-        demand[i] = cumulative_bids
-    
-    # Cumulative supply 
-    supply = Array(TOTAL_ORDERS, sint)
-    
+    curve_input_size = TOTAL_ORDERS * 2
+    curve_size = next_power_of_two(curve_input_size)
+
+    curve_prices = Array(curve_size, sint)
+    curve_qties = Array(curve_size, sint)
+
     for i in range(TOTAL_ORDERS):
-        price_level = sorted_prices[i]
+        curve_prices[i] = sorted_prices[i]
+        curve_qties[i] = sint(0)
+
+    for i in range(TOTAL_ORDERS):
+        curve_prices[TOTAL_ORDERS + i] = sorted_ask_prices[i]
+        curve_qties[TOTAL_ORDERS + i] = sint(0)
+
+    for i in range(curve_input_size, curve_size):
+        curve_prices[i] = sint(-1)
+        curve_qties[i] = sint(0)
+
+    curve_prices, curve_qties = bitonic_sort(curve_prices, curve_qties, curve_size, ascending=False)
+
+    # Cumulative demand and supply for all bid and ask price levels
+    demand = Array(curve_input_size, sint)
+    supply = Array(curve_input_size, sint)
+
+    for i in range(curve_input_size):
+        price_level = curve_prices[i]
+
+        cumulative_demand = sint(0)
+        for j in range(TOTAL_ORDERS):
+            cumulative_demand += (sorted_prices[j] >= price_level) * sorted_bid_qties[j]
+
         cumulative_supply = sint(0)
-        
-        # Sum all asks with price <= current bid price level
         for j in range(TOTAL_ORDERS):
             cumulative_supply += (sorted_ask_prices[j] <= price_level) * sorted_ask_qties[j]
-        
+
+        demand[i] = cumulative_demand
         supply[i] = cumulative_supply
-    
+
     if VERBOSE:
         print_ln("\nDemand/Supply curve:")
-        for i in range(TOTAL_ORDERS):
+        for i in range(curve_input_size):
             print_ln("Price %s: demand=%s supply=%s", 
-                     sorted_prices[i].reveal(),
+                     curve_prices[i].reveal(),
                      demand[i].reveal(),
                      supply[i].reveal())
-
-                     
+          
     
     print_ln("\nComputing clearing price...")
-    cp, volume_result = clearing_price(demand, supply, sorted_prices, TOTAL_ORDERS)
-    
+    cp, vol = clearing_price(demand, supply, curve_prices, sorted_prices, sorted_ask_prices, sorted_bid_qties, sorted_ask_qties, curve_input_size, TOTAL_ORDERS)
+
+    # Reveal clearing price for debugging (do not branch on secret values)
+    cp_public = cp.reveal()
+    print_ln("Revealed clearing price (public): %s", cp_public)
     # ============================================================
     # PRO-RATA ALLOCATIONS
     # ============================================================
@@ -213,16 +266,37 @@ def main():
         bid_quantities[i] = is_eligible_bid * sorted_bid_qties[i]
         ask_quantities[i] = is_eligible_ask * sorted_ask_qties[i]
 
+        if VERBOSE:
+            print_ln("Order %s: bid_price=%s qty=%s eligible=%s | ask_price=%s qty=%s eligible=%s", 
+                     i, sorted_prices[i].reveal(), sorted_bid_qties[i].reveal(), is_eligible_bid.reveal(),
+                     sorted_ask_prices[i].reveal(), sorted_ask_qties[i].reveal(), is_eligible_ask.reveal())
+
     is_demand_higher = total_eligible_bids > total_eligible_asks
     volume_to_fill = sint.min(total_eligible_bids, total_eligible_asks)
 
-    
+    if VERBOSE:
+        print_ln("\nTotal eligible bids: %s", total_eligible_bids.reveal())
+        print_ln("Total eligible asks: %s", total_eligible_asks.reveal())
+        print_ln("Volume to fill (min of both): %s", volume_to_fill.reveal())
+        print_ln("Demand higher (0=no,1=yes): %s", is_demand_higher.reveal())
 
     # Calculate fills for both sides
     bid_fills = pro_rata_fills(bid_quantities, total_eligible_bids, volume_to_fill)
     ask_fills = pro_rata_fills(ask_quantities, total_eligible_asks, volume_to_fill)
 
+    if VERBOSE:
+        print_ln("\nBid-side pro-rata fills:")
+        for i in range(TOTAL_ORDERS):
+            print_ln("  Order %s: %s units", i, bid_fills[i].reveal())
+
+        print_ln("\nAsk-side pro-rata fills:")
+        for i in range(TOTAL_ORDERS):
+            print_ln("  Order %s: %s units", i, ask_fills[i].reveal())
+
     # Choose correct fills based on which side is constrained
+    if VERBOSE:
+        print_ln("\nFinal allocations (demand_higher=%s):", is_demand_higher.reveal())
+    
     for i in range(TOTAL_ORDERS):
         final_fill = is_demand_higher.if_else(bid_fills[i], ask_fills[i])
         print_ln("Order %s: %s units", i, final_fill.reveal())
@@ -230,6 +304,7 @@ def main():
     print_ln("\n=== Auction Summary ===")
     print_ln("Clearing Price: %s", cp.reveal())
     print_ln("Total Volume: %s", volume_to_fill.reveal())
+    print_ln("Fills: " + ", ".join(["%s" for _ in range(TOTAL_ORDERS)]), *[bid_fills[i].reveal() for i in range(TOTAL_ORDERS)])
     
 
 main()
