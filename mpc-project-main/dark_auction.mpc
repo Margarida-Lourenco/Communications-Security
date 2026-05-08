@@ -75,42 +75,28 @@ def pro_rata_fills(quantities, total_eligible, volume):
     return fills
 
 
-
-
 # ------------------------------------------------------------
 # CLEARING PRICE
 # ------------------------------------------------------------
-def clearing_price(demand, supply, price_levels, prices_bid, prices_ask, bid_qties, ask_qties, n_levels, n_orders):
-
-    def volume_at_price(price):
-        """Cumulative demand/supply at a given price level."""
-        dem = sum((prices_bid[j] >= price) * bid_qties[j] for j in range(n_orders))
-        sup = sum((prices_ask[j] <= price) * ask_qties[j] for j in range(n_orders))
-        return sint.min(dem, sup)
+def clearing_price(demand, supply, price_levels, n_levels):
 
     def update_bounds(p_low, p_high, price, volume):
-        """Branchless min/max update when volume == best_volume."""
         is_max = volume == best_volume
         p_low  = is_max.if_else(sint.min(p_low, price), p_low)
         p_high = is_max.if_else(sint.max(p_high, price), p_high)
         return p_low, p_high
 
-    # Step 1: best tradeable volume across bid price levels
+    # Step 1: best tradeable volume across all price levels
     best_volume = sint(0)
     for i in range(n_levels):
         vol = sint.min(demand[i], supply[i])
         best_volume = (vol > best_volume).if_else(vol, best_volume)
 
-    # Step 2: price plateau bounds across all price levels
+    # Step 2: price plateau bounds — widest range achieving best_volume
     p_low, p_high = sint(10**9), sint(-1)
-
     for i in range(n_levels):
         p_low, p_high = update_bounds(p_low, p_high, price_levels[i],
                                       sint.min(demand[i], supply[i]))
-
-    for i in range(n_levels):
-        p_low, p_high = update_bounds(p_low, p_high, price_levels[i],
-                                      volume_at_price(price_levels[i]))
 
     # Step 3: clearing price as midpoint of plateau
     cp = (sfix(p_low) + sfix(p_high)) / sfix(2)
@@ -240,7 +226,7 @@ def main():
           
     
     print_ln("\nComputing clearing price...")
-    cp, vol = clearing_price(demand, supply, curve_prices, sorted_prices, sorted_ask_prices, sorted_bid_qties, sorted_ask_qties, curve_input_size, TOTAL_ORDERS)
+    cp, vol = clearing_price(demand, supply, curve_prices, curve_input_size)
 
     # Reveal clearing price for debugging (do not branch on secret values)
     cp_public = cp.reveal()
