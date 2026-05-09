@@ -1,0 +1,4 @@
+# bid_price  bid_qty  ask_price  ask_qty
+8            3        0          0
+0            0        7          2
+0            0        0          0
