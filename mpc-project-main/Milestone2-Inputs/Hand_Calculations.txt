@@ -1,0 +1,89 @@
+=====================================
+ DARK AUCTION — HAND VERIFICATION
+ 1 Asset, 4 Bids, 4 Asks
+=====================================
+
+-------------------------------------
+ ALL ORDERS
+-------------------------------------
+BID | price=10, qty=6  (party0)
+BID | price=7,  qty=3  (party0)
+BID | price=9,  qty=2  (party1)
+BID | price=8,  qty=3  (party2)
+
+ASK | price=5,  qty=2  (party0)
+ASK | price=8,  qty=1  (party1)
+ASK | price=6,  qty=1  (party1)
+ASK | price=7,  qty=2  (party2)
+
+-------------------------------------
+ DEMAND D(p) AND SUPPLY S(p)
+-------------------------------------
+D(p) = sum of bid quantities where bid_price >= p
+S(p) = sum of ask quantities where ask_price <= p
+V(p) = min(D(p), S(p))
+
+p=5 | D=6+3+2+3=14 | S=2       | V=2
+p=6 | D=6+3+2+3=14 | S=2+1=3   | V=3
+p=7 | D=6+3+2+3=14 | S=2+1+2=5 | V=5
+p=8 | D=6+2+3=11   | S=2+1+2+1=6 | V=6  <-- max
+p=9 | D=6+2=8      | S=2+1+2+1=6 | V=6  <-- max
+p=10| D=6          | S=2+1+2+1=6 | V=6  <-- max
+
+Note: bid@7 (qty=3) drops out at p=8 (7 < 8)
+Note: bid@8 (qty=3) drops out at p=9 (8 < 9)
+Note: bid@9 (qty=2) drops out at p=10 (9 < 10)
+
+-------------------------------------
+ CLEARING PRICE
+-------------------------------------
+Maximum V* = 6, achieved at p=8, p=9, p=10 (plateau)
+
+p* = (p_low + p_high) / 2
+p* = (8 + 10) / 2 = 9.0
+
+Clearing price = 9.0
+Traded volume  = 6
+
+-------------------------------------
+ PRO-RATA FILLS
+-------------------------------------
+Eligible bids (bid_price >= 9.0): bid@10 (qty=6), bid@9 (qty=2)
+Eligible asks (ask_price <= 9.0): ask@5 (qty=2), ask@6 (qty=1), ask@7 (qty=2), ask@8 (qty=1)
+
+Total demand = 6 + 2 = 8
+Total supply = 2 + 1 + 2 + 1 = 6
+
+Demand (8) > Supply (6) --> BID SIDE is over-subscribed, bids get rationed.
+Volume to distribute = 6, total eligible bid qty = 8.
+
+fill_i = floor(qty_i * V* / total_bid_qty)
+
+bid@10: floor(6 * 6 / 8) = floor(4.5) = 4
+bid@9:  floor(2 * 6 / 8) = floor(1.5) = 1
+Total allocated = 4 + 1 = 5
+
+Residual = 6 - 5 = 1 --> assigned to first eligible bid (bid@10)
+
+Final bid fills:
+  bid@10 --> 4 + 1 = 5
+  bid@9  --> 1
+
+Asks are fully filled (supply side not rationed):
+  ask@5  --> 2
+  ask@6  --> 1
+  ask@7  --> 2
+  ask@8  --> 1
+
+-------------------------------------
+ EXPECTED PROGRAM OUTPUT
+-------------------------------------
+Clearing price : 9.0
+Traded volume  : 6
+bid@10 fill    : 5  (rationed)
+bid@9  fill    : 1  (rationed)
+ask@5  fill    : 2  (full)
+ask@6  fill    : 1  (full)
+ask@7  fill    : 2  (full)
+ask@8  fill    : 1  (full)
+=====================================
