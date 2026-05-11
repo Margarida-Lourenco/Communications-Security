@@ -1,179 +1,208 @@
-from Compiler.types import sint, sfix, cint, regint, Array
+from Compiler.types import sint, Array
 from Compiler.library import print_ln
 
 # ------------------------------------------------------------
 # Dark Auction config
 # ------------------------------------------------------------
-N_ASSETS = 1          
-N_ORDERS = 4      
-N_PARTIES = 3
+N_ASSETS = 3
+N_PARTIES = 3        
+N_ORDERS = 10         
+VERBOSE = True
 
 # ------------------------------------------------------------
-# Function clearing price and transaction volume
+# Bubble sort
 # ------------------------------------------------------------
-def clearing_price(demand, supply, min_price, max_price):
+def bubble_sort(allprices, start, end):
+    n = end - start
+    for i in range(n - 1):
+        for j in range(n - 1 - i):
+            swap = allprices[start + j] > allprices[start + j + 1]
 
-    tamanho = max_price - min_price + 1
-    best_volume = sint(0)
-    best_price_low = sint(0)
-    best_price_high = sint(0)
-    
-    for idx in range(tamanho):
-        p = min_price + idx
-        volume = sint.min(demand[idx], supply[idx])
-        
-        is_better = volume > best_volume
-        best_volume = is_better * volume + (1 - is_better) * best_volume
-        best_price_low = is_better * p + (1 - is_better) * best_price_low
-        best_price_high = is_better * p + (1 - is_better) * best_price_high
-        
-        is_equal = volume == best_volume
-        new_low = sint.min(best_price_low, p)
-        new_high = sint.max(best_price_high, p)
-        best_price_low = is_equal * new_low + (1 - is_equal) * best_price_low
-        best_price_high = is_equal * new_high + (1 - is_equal) * best_price_high
-    
-    clearing_price = (best_price_low + best_price_high) / 2
-    
-    return clearing_price, best_volume
+            temp = allprices[start + j]
+            allprices[start + j] = swap.if_else(allprices[start + j + 1], allprices[start + j])
+            allprices[start + j + 1] = swap.if_else(temp, allprices[start + j + 1])
+
+    return allprices
+
 
 # ------------------------------------------------------------
-# Pro-rata allocation (safe)
+# Pro-rata allocation 
 # ------------------------------------------------------------
 def pro_rata_fills(quantities, total_eligible, volume):
     fills = [sint(0) for _ in range(len(quantities))]
     allocated = sint(0)
 
-    # evitar divisão por zero
     safe_total = total_eligible + (total_eligible == 0)
 
     for i in range(len(quantities)):
-        fills[i] = (quantities[i] * volume) / safe_total
+        fills[i] = (quantities[i] * volume).int_div(safe_total, 32)
         allocated += fills[i]
-    
+
     residual = volume - allocated
     fills[0] += residual
 
     return fills
+
+
+# ------------------------------------------------------------
+# CLEARING PRICE
+# ------------------------------------------------------------
+def clearing_price(prices, demand, supply, n):
+    print_ln("\nComputing clearing price...")
+    
+    best_volume = sint(0)
+    first_price = sint(0)
+    last_price = sint(0)
+    found = sint(0)
+    
+    for i in range(n):
+        volume = sint.min(demand[i], supply[i])
+        is_better = volume > best_volume
+        best_volume = is_better.if_else(volume, best_volume)
+    
+    for i in range(n):
+        volume = sint.min(demand[i], supply[i])
+        is_max = (volume == best_volume)
+        
+        is_first = (found == 0) & is_max
+        first_price = is_first.if_else(prices[i], first_price)
+        last_price = is_max.if_else(prices[i], last_price)
+        found = found + is_max
+    
+    clearing_price = (first_price + last_price) / 2
+    
+    print_ln("Maximum volume: %s", best_volume.reveal())
+    print_ln("Clearing price (midpoint): %s", clearing_price.reveal())
+    
+    return clearing_price, best_volume
+
 
 # ------------------------------------------------------------
 # Main
 # ------------------------------------------------------------
 def main():
     print_ln("\n=== Dark Auction with MPC ===\n")
-    print_ln("Step 1: Reading inputs...")
     
-    bids_price = [[[sint(0) for _ in range(N_ORDERS)] for _ in range(N_ASSETS)] for _ in range(N_PARTIES)]
-    bids_qty   = [[[sint(0) for _ in range(N_ORDERS)] for _ in range(N_ASSETS)] for _ in range(N_PARTIES)]
-    asks_price = [[[sint(0) for _ in range(N_ORDERS)] for _ in range(N_ASSETS)] for _ in range(N_PARTIES)]
-    asks_qty   = [[[sint(0) for _ in range(N_ORDERS)] for _ in range(N_ASSETS)] for _ in range(N_PARTIES)]
+    TOTAL_ORDERS = N_ORDERS * N_PARTIES
+    print_ln("Total orders aggregated: %s", TOTAL_ORDERS)
     
-    party_bids_price = [[[] for _ in range(N_ASSETS)] for _ in range(N_PARTIES)]
-    party_bids_qty = [[[] for _ in range(N_ASSETS)] for _ in range(N_PARTIES)]
-    party_asks_price = [[[] for _ in range(N_ASSETS)] for _ in range(N_PARTIES)]
-    party_asks_qty = [[[] for _ in range(N_ASSETS)] for _ in range(N_PARTIES)]
+    print_ln("Reading inputs...")
     
-    for party in range(N_PARTIES):
-        for asset in range(N_ASSETS):
+    bid_prices = Array(N_ASSETS * TOTAL_ORDERS, sint)
+    bid_qties = Array(N_ASSETS * TOTAL_ORDERS, sint)
+    ask_prices = Array(N_ASSETS * TOTAL_ORDERS, sint)
+    ask_qties = Array(N_ASSETS * TOTAL_ORDERS, sint)
+    all_prices = Array(N_ASSETS * 2 * TOTAL_ORDERS, sint)
+
+    # Ler todos os inputs
+    for asset in range(N_ASSETS):
+        offset_orders = asset * TOTAL_ORDERS
+        for party in range(N_PARTIES):
             for order in range(N_ORDERS):
-                bids_price[party][asset][order] = sint.get_input_from(party)
-                bids_qty[party][asset][order] = sint.get_input_from(party)
-                asks_price[party][asset][order] = sint.get_input_from(party)
-                asks_qty[party][asset][order] = sint.get_input_from(party)
+                idx = offset_orders + order + party * N_ORDERS
+                bid_prices[idx] = 2*sint.get_input_from(party)
+                bid_qties[idx] = sint.get_input_from(party)
+                ask_prices[idx] = 2*sint.get_input_from(party)
+                ask_qties[idx] = sint.get_input_from(party)
                 
-                party_bids_price[party][asset].append(bids_price[party][asset][order])
-                party_bids_qty[party][asset].append(bids_qty[party][asset][order])
-                party_asks_price[party][asset].append(asks_price[party][asset][order])
-                party_asks_qty[party][asset].append(asks_qty[party][asset][order])
-        print_ln("Party_finished")
+                if VERBOSE:
+                    print_ln("Asset %s Order %s (P%s): bid=%s/%s ask=%s/%s", 
+                             asset, idx % TOTAL_ORDERS, party,
+                             bid_prices[idx].reveal(),
+                             bid_qties[idx].reveal(),
+                             ask_prices[idx].reveal(),
+                             ask_qties[idx].reveal())
     
-    max_int = 250
-
-    demand = [Array(max_int + 1, sint) for _ in range(N_ASSETS)]
-    supply = [Array(max_int + 1, sint) for _ in range(N_ASSETS)]
-    demand_party = [[Array(max_int + 1, sint) for _ in range(N_ASSETS)] for _ in range(N_PARTIES)]
-    supply_party = [[Array(max_int + 1, sint) for _ in range(N_ASSETS)] for _ in range(N_PARTIES)]
-
-    print_ln("Step 2: Building demand/supply curves...")
-    # Inicialização explícita
-    for a in range(N_ASSETS):
-        for j in range(max_int + 1):
-            demand[a][j] = sint(0)
-            supply[a][j] = sint(0)
-
+    # Inicializar all_prices para cada asset
+    for asset in range(N_ASSETS):
+        offset_orders = asset * TOTAL_ORDERS
+        offset_prices = asset * 2 * TOTAL_ORDERS
+        for i in range(TOTAL_ORDERS):
+            all_prices[offset_prices + i] = ask_prices[offset_orders + i]
+            all_prices[offset_prices + i + TOTAL_ORDERS] = bid_prices[offset_orders + i]
     
-    for p in range(N_PARTIES):
-        for a in range(N_ASSETS):
-            for j in range(max_int + 1):
-                demand_party[p][a][j] = sint(0)
-                supply_party[p][a][j] = sint(0)
-
-    # Demand
-    for p in range(N_PARTIES):
-        for a in range(N_ASSETS):
-            for j in range(max_int+1):
-                for i in range(len(party_bids_price[p][a])):
-                    mask = (party_bids_price[p][a][i] >= sint(j))
-                    demand_party[p][a][j] += mask * party_bids_qty[p][a][i]
-                    demand[a][j] += mask * party_bids_qty[p][a][i]
-
-    # Supply
-    for p in range(N_PARTIES):
-        for a in range(N_ASSETS):
-            for j in range(max_int+1):
-                for i in range(len(party_asks_price[p][a])):
-                    mask = (party_asks_price[p][a][i] <= sint(j))
-                    supply_party[p][a][j] += mask * party_asks_qty[p][a][i]
-                    supply[a][j] += mask * party_asks_qty[p][a][i]
-                    
-    
-    print_ln("Step 4: Computing clearing prices and allocations...")
-    # Clearing + allocation
-    for a in range(N_ASSETS):
-        print_ln("  Processing Asset %s...", a)
-        cp, volume_result = clearing_price(demand[a], supply[a], 0, max_int)
-
-        print_ln("\n=== Results ===")
-        print_ln("Clearing price: %s", cp.reveal())
-        print_ln("Transaction volume: %s", volume_result.reveal())  
-
-        eligible_qties_bids = []
-        eligible_qties_asks = []
-
-        demand_at_cp = sint(0)
-        supply_at_cp = sint(0)
-
-        for party in range(N_PARTIES):
-            for i in range(N_ORDERS):
-                mask_bid = (bids_price[party][a][i] >= cp)
-                mask_ask = (asks_price[party][a][i] <= cp)
-
-                eligible_qties_bids.append(mask_bid * bids_qty[party][a][i])
-                eligible_qties_asks.append(mask_ask * asks_qty[party][a][i])
-
-                demand_at_cp += mask_bid * bids_qty[party][a][i]
-                supply_at_cp += mask_ask * asks_qty[party][a][i]
-
+    # Processar cada asset
+    for asset in range(N_ASSETS):
+        print_ln("\n=== Processing Asset %s ===", asset)
+        
+        offset_orders = asset * TOTAL_ORDERS
+        offset_prices = asset * 2 * TOTAL_ORDERS
+        
+        # Sort apenas os preços deste asset
+        print_ln("Sorting orders by price for asset %s...", asset)
+        all_prices = bubble_sort(all_prices, offset_prices, offset_prices + 2*TOTAL_ORDERS)
+        
+        # ============================================================
+        # BUILD DEMAND AND SUPPLY CURVES
+        # ============================================================
+        print_ln("Building demand/supply curves for asset %s...", asset)
+        
+        demand = Array(2*TOTAL_ORDERS, sint)
+        supply = Array(2*TOTAL_ORDERS, sint)
+        
+        for i in range(2*TOTAL_ORDERS):
+            p = all_prices[offset_prices + i]
+            
+            d = sint(0)
+            for j in range(TOTAL_ORDERS):
+                d += (bid_prices[offset_orders + j] >= p) * bid_qties[offset_orders + j]
+            demand[i] = d
+            
+            s = sint(0)
+            for j in range(TOTAL_ORDERS):
+                s += (ask_prices[offset_orders + j] <= p) * ask_qties[offset_orders + j]
+            supply[i] = s
+        
+        if VERBOSE:
+            print_ln("\nDemand/Supply curve for asset %s:", asset)
+            for i in range(2*TOTAL_ORDERS):
+                print_ln("Price %s: demand=%s supply=%s", 
+                         all_prices[offset_prices + i].reveal(),
+                         demand[i].reveal(),
+                         supply[i].reveal())
+        
+        cp, volume_result = clearing_price(all_prices[offset_prices:offset_prices+2*TOTAL_ORDERS], demand, supply, 2*TOTAL_ORDERS)
+        
+        # ============================================================
+        # PRO-RATA ALLOCATIONS
+        # ============================================================
+        print_ln("\nComputing pro-rata allocations for asset %s...", asset)
+        
         total_eligible_bids = sint(0)
-        for qty in eligible_qties_bids:
-            total_eligible_bids += qty
-
         total_eligible_asks = sint(0)
-        for qty in eligible_qties_asks:
-            total_eligible_asks += qty
+        bid_quantities = [sint(0) for _ in range(TOTAL_ORDERS)]
+        ask_quantities = [sint(0) for _ in range(TOTAL_ORDERS)]
+        
+        for i in range(TOTAL_ORDERS):
+            is_eligible_bid = (bid_prices[offset_orders + i] >= cp)
+            is_eligible_ask = (ask_prices[offset_orders + i] <= cp)
+            
+            total_eligible_bids += is_eligible_bid * bid_qties[offset_orders + i]
+            total_eligible_asks += is_eligible_ask * ask_qties[offset_orders + i]
+            bid_quantities[i] = is_eligible_bid * bid_qties[offset_orders + i]
+            ask_quantities[i] = is_eligible_ask * ask_qties[offset_orders + i]
+        
+        volume_to_fill = sint.min(total_eligible_bids, total_eligible_asks)
+        
+        bid_fills = pro_rata_fills(bid_quantities, total_eligible_bids, volume_to_fill)
+        ask_fills = pro_rata_fills(ask_quantities, total_eligible_asks, volume_to_fill)
+        
+        for i in range(TOTAL_ORDERS):
+            print_ln("Order %s of asset %s bought %s units", i, asset, bid_fills[i].reveal())
+            print_ln("Order %s of asset %s sold %s units", i, asset, ask_fills[i].reveal())
+        
+        print_ln("\n=== Asset %s Summary ===", asset)
+        cp_val = cp.reveal()
+        cp_int = int(cp_val)
 
-        volume_to_fill = sint.min(demand_at_cp, supply_at_cp)
-        is_demand_higher = (demand_at_cp > supply_at_cp)
+        whole = cp_int // 2
+        half = cp_int % 2
 
-        fills_bids = pro_rata_fills(eligible_qties_bids, total_eligible_bids, volume_to_fill)
-        fills_asks = pro_rata_fills(eligible_qties_asks, total_eligible_asks, volume_to_fill)
+        if half == 0:
+            print_ln("Clearing Price: %s.0", whole)
+        else:
+            print_ln("Clearing Price: %s.5", whole)
 
-        print_ln("\nRationing results:")
-        idx = 0
-        for party in range(N_PARTIES):
-            for i in range(N_ORDERS):
-                final_fill = is_demand_higher * fills_bids[idx] + (1 - is_demand_higher) * fills_asks[idx]
-                print_ln("  Party %s Order %s: %s units", party, i, final_fill.reveal())
-                idx += 1
+            print_ln("Total Volume: %s", volume_to_fill.reveal())
 
 main()
