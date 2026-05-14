@@ -55,26 +55,25 @@ def clearing_price(prices, demand, supply, n):
     last_price = sint(0)
     found = sint(0)
     
+    # Calculate maximum volume that can be traded at any price point
     for i in range(n):
         volume = sint.min(demand[i], supply[i])
         is_better = volume > best_volume
         best_volume = is_better.if_else(volume, best_volume)
     
+    # Calculate which price points achieve this maximum volume and find the first and last such price
     for i in range(n):
         volume = sint.min(demand[i], supply[i])
         is_max = (volume == best_volume)
         
-        is_first = (found == 0) & is_max
+        is_first = (found == 0) & is_max # 0 -> false; 1 -> true;
         first_price = is_first.if_else(prices[i], first_price)
         last_price = is_max.if_else(prices[i], last_price)
         found = found + is_max
     
     clearing_price = (first_price + last_price)
     
-    print_ln("Maximum volume: %s", best_volume.reveal())
-    print_ln("Clearing price (midpoint): %s", clearing_price.reveal())
-    
-    return clearing_price, best_volume
+    return clearing_price
 
 
 # ------------------------------------------------------------
@@ -94,7 +93,7 @@ def main():
     ask_qties = Array(N_ASSETS * TOTAL_ORDERS, sint)
     all_prices = Array(N_ASSETS * 2 * TOTAL_ORDERS, sint)
 
-    # Ler todos os inputs
+    # Read inputs 
     for asset in range(N_ASSETS):
         offset_orders = asset * TOTAL_ORDERS
         for party in range(N_PARTIES):
@@ -113,22 +112,24 @@ def main():
                              ask_prices[idx].reveal(),
                              ask_qties[idx].reveal())
     
-    # Inicializar all_prices para cada asset
-    for asset in range(N_ASSETS):
-        offset_orders = asset * TOTAL_ORDERS
-        offset_prices = asset * 2 * TOTAL_ORDERS
+    # Initialize all_prices with bid and ask prices for each asset
+    for asset in range(N_ASSETS): 
+        offset_orders = asset * TOTAL_ORDERS # start index of orders for this asset
+        offset_prices = asset * 2 * TOTAL_ORDERS # start index of prices for this asset in all_prices
+ 
+        # Fill all_prices with ask and bid prices for this asset
+        # For each asset, the all_prices array will have ask prices followed by bid prices 
         for i in range(TOTAL_ORDERS):
             all_prices[offset_prices + i] = ask_prices[offset_orders + i]
             all_prices[offset_prices + i + TOTAL_ORDERS] = bid_prices[offset_orders + i]
     
-    # Processar cada asset
+    # Process each asset separately: sort prices, build demand/supply curves, find clearing price, and compute pro-rata allocations
     for asset in range(N_ASSETS):
         print_ln("\n=== Processing Asset %s ===", asset)
         
-        offset_orders = asset * TOTAL_ORDERS
+        offset_orders = asset * TOTAL_ORDERS 
         offset_prices = asset * 2 * TOTAL_ORDERS
         
-        # Sort apenas os preços deste asset
         print_ln("Sorting orders by price for asset %s...", asset)
         all_prices = bubble_sort(all_prices, offset_prices, offset_prices + 2*TOTAL_ORDERS)
         
@@ -161,7 +162,7 @@ def main():
                          demand[i].reveal(),
                          supply[i].reveal())
         
-        cp, volume_result = clearing_price(all_prices[offset_prices:offset_prices+2*TOTAL_ORDERS], demand, supply, 2*TOTAL_ORDERS)
+        cp = clearing_price(all_prices[offset_prices:offset_prices+2*TOTAL_ORDERS], demand, supply, 2*TOTAL_ORDERS)
         
         # ============================================================
         # PRO-RATA ALLOCATIONS
@@ -187,19 +188,33 @@ def main():
         bid_fills = pro_rata_fills(bid_quantities, total_eligible_bids, volume_to_fill)
         ask_fills = pro_rata_fills(ask_quantities, total_eligible_asks, volume_to_fill)
         
+        # Detailed per-order pro-rata debug prints
+        if VERBOSE:
+            print_ln("\nPro-rata allocations (detailed):")
+            print_ln("BIDS:")
+            for i in range(TOTAL_ORDERS):
+                is_full = (bid_fills[i] == bid_quantities[i])  # secret bit, no .reveal() yet
+                print_ln("bid@%s  fill : %s  full=%s",
+                        bid_prices[offset_orders + i].reveal(),
+                        bid_fills[i].reveal(),
+                        is_full.reveal())  # prints 1 or 0
+
+            print_ln("ASKS:")
+            for i in range(TOTAL_ORDERS):
+                is_full = (ask_fills[i] == ask_quantities[i])  # same pattern
+                print_ln("ask@%s  fill : %s  full=%s",
+                        ask_prices[offset_orders + i].reveal(),
+                        ask_fills[i].reveal(),
+                        is_full.reveal())  # prints 1 or 0
+
+        # Final summary prints for this asset
         for i in range(TOTAL_ORDERS):
             print_ln("Order %s of asset %s bought %s units", i, asset, bid_fills[i].reveal())
             print_ln("Order %s of asset %s sold %s units", i, asset, ask_fills[i].reveal())
-        
+            
         print_ln("\n=== Asset %s Summary ===", asset)
 
-        whole = cp.int_div(2, 32)
-        half = cp % 2
-
-        decimal = half * 5
-
-        print_ln("Clearing Price: %s.%s", whole.reveal(), decimal.reveal())
-
+        print_ln("Clearing Price: %s", (cp.reveal())/2)
         print_ln("Total Volume: %s", volume_to_fill.reveal())
 
 main()
