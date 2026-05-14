@@ -4,7 +4,7 @@ from Compiler.library import print_ln
 # ------------------------------------------------------------
 # Dark Auction config
 # ------------------------------------------------------------
-N_ASSETS = 3
+N_ASSETS = 1
 N_PARTIES = 3        
 N_ORDERS = 10         
 VERBOSE = True
