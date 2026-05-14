@@ -6,7 +6,7 @@ from Compiler.library import print_ln
 # ------------------------------------------------------------
 N_ASSETS = 1
 N_PARTIES = 3        
-N_ORDERS = 10         
+N_ORDERS = 4       
 VERBOSE = True
 
 # ------------------------------------------------------------
@@ -69,7 +69,7 @@ def clearing_price(prices, demand, supply, n):
         last_price = is_max.if_else(prices[i], last_price)
         found = found + is_max
     
-    clearing_price = (first_price + last_price) / 2
+    clearing_price = (first_price + last_price)
     
     print_ln("Maximum volume: %s", best_volume.reveal())
     print_ln("Clearing price (midpoint): %s", clearing_price.reveal())
@@ -100,9 +100,9 @@ def main():
         for party in range(N_PARTIES):
             for order in range(N_ORDERS):
                 idx = offset_orders + order + party * N_ORDERS
-                bid_prices[idx] = 2*sint.get_input_from(party)
+                bid_prices[idx] = sint.get_input_from(party)
                 bid_qties[idx] = sint.get_input_from(party)
-                ask_prices[idx] = 2*sint.get_input_from(party)
+                ask_prices[idx] = sint.get_input_from(party)
                 ask_qties[idx] = sint.get_input_from(party)
                 
                 if VERBOSE:
@@ -174,8 +174,8 @@ def main():
         ask_quantities = [sint(0) for _ in range(TOTAL_ORDERS)]
         
         for i in range(TOTAL_ORDERS):
-            is_eligible_bid = (bid_prices[offset_orders + i] >= cp)
-            is_eligible_ask = (ask_prices[offset_orders + i] <= cp)
+            is_eligible_bid = (2*bid_prices[offset_orders + i] >= cp)
+            is_eligible_ask = (2*ask_prices[offset_orders + i] <= cp)
             
             total_eligible_bids += is_eligible_bid * bid_qties[offset_orders + i]
             total_eligible_asks += is_eligible_ask * ask_qties[offset_orders + i]
@@ -192,17 +192,14 @@ def main():
             print_ln("Order %s of asset %s sold %s units", i, asset, ask_fills[i].reveal())
         
         print_ln("\n=== Asset %s Summary ===", asset)
-        cp_val = cp.reveal()
-        cp_int = int(cp_val)
 
-        whole = cp_int // 2
-        half = cp_int % 2
+        whole = cp.int_div(2, 32)
+        half = cp % 2
 
-        if half == 0:
-            print_ln("Clearing Price: %s.0", whole)
-        else:
-            print_ln("Clearing Price: %s.5", whole)
+        decimal = half * 5
 
-            print_ln("Total Volume: %s", volume_to_fill.reveal())
+        print_ln("Clearing Price: %s.%s", whole.reveal(), decimal.reveal())
+
+        print_ln("Total Volume: %s", volume_to_fill.reveal())
 
 main()
