@@ -65,7 +65,6 @@ def clearing_price(prices, demand, supply, n):
     for i in range(n):
         volume = sint.min(demand[i], supply[i])
         is_max = (volume == best_volume)
-        
         is_first = (found == 0) & is_max # 0 -> false; 1 -> true;
         first_price = is_first.if_else(prices[i], first_price)
         last_price = is_max.if_else(prices[i], last_price)
@@ -140,16 +139,42 @@ def main():
         
         demand = Array(2*TOTAL_ORDERS, sint)
         supply = Array(2*TOTAL_ORDERS, sint)
-        
-        for i in range(2*TOTAL_ORDERS):
+
+        running_s = sint(0)
+        prev_price = sint(0)
+        for i in range(2 * TOTAL_ORDERS):
             p = all_prices[offset_prices + i]
-            d = sint(0)
-            s = sint(0)
+            delta_s = sint(0)
+            delta_s_revealed = 0
             for j in range(TOTAL_ORDERS):
-                d += (bid_prices[offset_orders + j] >= p) * bid_qties[offset_orders + j]
-                s += (ask_prices[offset_orders + j] <= p) * ask_qties[offset_orders + j]
-            demand[i] = d
-            supply[i] = s 
+                matched = (ask_prices[offset_orders + j] == p)
+                qty = ask_qties[offset_orders + j]
+                delta_s += matched * qty
+            if i == 0:
+                running_s += delta_s
+            else:
+                same_price = (p == prev_price)
+                running_s = same_price.if_else(running_s, running_s + delta_s)
+            supply[i] = running_s
+            prev_price = p
+
+        running_d = sint(0)
+        prev_price = sint(0)
+        for i in range(2 * TOTAL_ORDERS - 1, -1, -1):
+            p = all_prices[offset_prices + i]
+            delta_d = sint(0)
+            for j in range(TOTAL_ORDERS):
+                matched = (bid_prices[offset_orders + j] == p)
+                qty = bid_qties[offset_orders + j]
+                delta_d += matched * qty
+        
+            if i == 2 * TOTAL_ORDERS - 1:
+                running_d += delta_d
+            else:
+                same_price = (p == prev_price)
+                running_d = same_price.if_else(running_d, running_d + delta_d)
+            demand[i] = running_d
+            prev_price = p
 
         if VERBOSE:
             print_ln("\nDemand/Supply curve for asset %s:", asset)
@@ -211,7 +236,10 @@ def main():
             
         print_ln("\n=== Asset %s Summary ===", asset)
 
-        print_ln("Clearing Price: %s", (cp.reveal())/2)
+        cp_revealed = cp.reveal()
+        int_part = cp_revealed // 2
+        remainder = cp_revealed % 2
+        print_ln("Clearing Price: %s.%s", int_part, remainder * 5)
         print_ln("Total Volume: %s", volume_to_fill.reveal())
 
 main()
