@@ -143,17 +143,14 @@ def main():
         
         for i in range(2*TOTAL_ORDERS):
             p = all_prices[offset_prices + i]
-            
             d = sint(0)
-            for j in range(TOTAL_ORDERS):
-                d += (bid_prices[offset_orders + j] >= p) * bid_qties[offset_orders + j]
-            demand[i] = d
-            
             s = sint(0)
             for j in range(TOTAL_ORDERS):
+                d += (bid_prices[offset_orders + j] >= p) * bid_qties[offset_orders + j]
                 s += (ask_prices[offset_orders + j] <= p) * ask_qties[offset_orders + j]
-            supply[i] = s
-        
+            demand[i] = d
+            supply[i] = s 
+
         if VERBOSE:
             print_ln("\nDemand/Supply curve for asset %s:", asset)
             for i in range(2*TOTAL_ORDERS):
