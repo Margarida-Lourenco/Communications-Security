@@ -10,19 +10,51 @@ N_ORDERS = 4
 VERBOSE = True
 
 # ------------------------------------------------------------
-# Bubble sort
+# Determine the next power of 2, for sort's padding
 # ------------------------------------------------------------
-def bubble_sort(allprices, start, end):
-    n = end - start
-    for i in range(n - 1):
-        for j in range(n - 1 - i):
-            swap = allprices[start + j] > allprices[start + j + 1]
+def next_power_of_two(x):
+    r = 1
+    while r < x:
+        r *= 2
+    return r
 
-            temp = allprices[start + j]
-            allprices[start + j] = swap.if_else(allprices[start + j + 1], allprices[start + j])
-            allprices[start + j + 1] = swap.if_else(temp, allprices[start + j + 1])
+REAL_PRICES_PER_ASSET = 2 * N_ORDERS * N_PARTIES
+SORTED_PRICES_PER_ASSET = next_power_of_two(REAL_PRICES_PER_ASSET)
 
-    return allprices
+MAX_PRICE = sint(10**9)
+
+# ------------------------------------------------------------
+# Batcher's odd-even merge sort
+# ------------------------------------------------------------
+def compare_swap(arr, i, j):
+    swap = arr[i] > arr[j]
+
+    tmp = arr[i]
+    arr[i] = swap.if_else(arr[j], arr[i])
+    arr[j] = swap.if_else(tmp, arr[j])
+
+def odd_even_merge(arr, lo, n, r):
+    step = r * 2
+
+    if step < n:
+        odd_even_merge(arr, lo, n, step)
+        odd_even_merge(arr, lo + r, n, step)
+
+        for i in range(lo + r, lo + n - r, step):
+            compare_swap(arr, i, i + r)
+    else:
+        compare_swap(arr, lo, lo + r)
+
+def odd_even_merge_sort_rec(arr, lo, n):
+    if n > 1:
+        m = n // 2
+        odd_even_merge_sort_rec(arr, lo, m)
+        odd_even_merge_sort_rec(arr, lo + m, m)
+        odd_even_merge(arr, lo, n, 1)
+
+def odd_even_merge_sort(arr, start, n):
+    odd_even_merge_sort_rec(arr, start, n)
+    return arr
 
 
 # ------------------------------------------------------------
@@ -90,7 +122,7 @@ def main():
     bid_qties = Array(N_ASSETS * TOTAL_ORDERS, sint)
     ask_prices = Array(N_ASSETS * TOTAL_ORDERS, sint)
     ask_qties = Array(N_ASSETS * TOTAL_ORDERS, sint)
-    all_prices = Array(N_ASSETS * 2 * TOTAL_ORDERS, sint)
+    all_prices = Array(N_ASSETS * SORTED_PRICES_PER_ASSET, sint)
 
     # Read inputs 
     for asset in range(N_ASSETS):
@@ -114,65 +146,74 @@ def main():
     # Initialize all_prices with bid and ask prices for each asset
     for asset in range(N_ASSETS): 
         offset_orders = asset * TOTAL_ORDERS # start index of orders for this asset
-        offset_prices = asset * 2 * TOTAL_ORDERS # start index of prices for this asset in all_prices
+        offset_prices = asset * SORTED_PRICES_PER_ASSET # start index of prices for this asset in all_prices
  
         # Fill all_prices with ask and bid prices for this asset
         # For each asset, the all_prices array will have ask prices followed by bid prices 
         for i in range(TOTAL_ORDERS):
             all_prices[offset_prices + i] = ask_prices[offset_orders + i]
             all_prices[offset_prices + i + TOTAL_ORDERS] = bid_prices[offset_orders + i]
+
+        for i in range(2 * TOTAL_ORDERS, SORTED_PRICES_PER_ASSET):
+            all_prices[offset_prices + i] = MAX_PRICE
     
     # Process each asset separately: sort prices, build demand/supply curves, find clearing price, and compute pro-rata allocations
     for asset in range(N_ASSETS):
         print_ln("\n=== Processing Asset %s ===", asset)
         
         offset_orders = asset * TOTAL_ORDERS 
-        offset_prices = asset * 2 * TOTAL_ORDERS
+        offset_prices = asset * SORTED_PRICES_PER_ASSET
         
         print_ln("Sorting orders by price for asset %s...", asset)
-        all_prices = bubble_sort(all_prices, offset_prices, offset_prices + 2*TOTAL_ORDERS)
-        
+        all_prices = odd_even_merge_sort(all_prices, offset_prices, SORTED_PRICES_PER_ASSET)
+
         # ============================================================
         # BUILD DEMAND AND SUPPLY CURVES
         # ============================================================
         print_ln("Building demand/supply curves for asset %s...", asset)
         
-        demand = Array(2*TOTAL_ORDERS, sint)
-        supply = Array(2*TOTAL_ORDERS, sint)
+        demand = Array(REAL_PRICES_PER_ASSET, sint)
+        supply = Array(REAL_PRICES_PER_ASSET, sint)
 
         running_s = sint(0)
         prev_price = sint(0)
-        for i in range(2 * TOTAL_ORDERS):
+
+        for i in range(REAL_PRICES_PER_ASSET):
             p = all_prices[offset_prices + i]
             delta_s = sint(0)
-            delta_s_revealed = 0
+
             for j in range(TOTAL_ORDERS):
                 matched = (ask_prices[offset_orders + j] == p)
                 qty = ask_qties[offset_orders + j]
                 delta_s += matched * qty
+
             if i == 0:
                 running_s += delta_s
             else:
                 same_price = (p == prev_price)
                 running_s = same_price.if_else(running_s, running_s + delta_s)
+
             supply[i] = running_s
             prev_price = p
 
         running_d = sint(0)
         prev_price = sint(0)
-        for i in range(2 * TOTAL_ORDERS - 1, -1, -1):
+
+        for i in range(REAL_PRICES_PER_ASSET - 1, -1, -1):
             p = all_prices[offset_prices + i]
             delta_d = sint(0)
+
             for j in range(TOTAL_ORDERS):
                 matched = (bid_prices[offset_orders + j] == p)
                 qty = bid_qties[offset_orders + j]
                 delta_d += matched * qty
-        
-            if i == 2 * TOTAL_ORDERS - 1:
+
+            if i == REAL_PRICES_PER_ASSET - 1:
                 running_d += delta_d
             else:
                 same_price = (p == prev_price)
                 running_d = same_price.if_else(running_d, running_d + delta_d)
+
             demand[i] = running_d
             prev_price = p
 
@@ -184,8 +225,10 @@ def main():
                          demand[i].reveal(),
                          supply[i].reveal())
         
-        cp = clearing_price(all_prices[offset_prices:offset_prices+2*TOTAL_ORDERS], demand, supply, 2*TOTAL_ORDERS)
-        
+        cp = clearing_price(
+            all_prices[offset_prices:offset_prices + REAL_PRICES_PER_ASSET],
+            demand, supply, REAL_PRICES_PER_ASSET)
+
         # ============================================================
         # PRO-RATA ALLOCATIONS
         # ============================================================
