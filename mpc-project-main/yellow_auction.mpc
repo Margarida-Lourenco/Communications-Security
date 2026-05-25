@@ -6,7 +6,8 @@ from Compiler.library import print_ln
 # ------------------------------------------------------------
 N_ASSETS = 1
 N_PARTIES = 3        
-N_ORDERS = 4       
+N_ORDERS = 4      
+TOTAL_ORDERS = N_ORDERS * N_PARTIES 
 VERBOSE = True
 
 # ------------------------------------------------------------
@@ -138,7 +139,7 @@ def clearing_price(prices, demand, supply, n):
 def main():
     print_ln("\n=== Dark Auction with MPC ===\n")
     
-    TOTAL_ORDERS = N_ORDERS * N_PARTIES
+    
     print_ln("Total orders aggregated: %s", TOTAL_ORDERS)
     
     print_ln("Reading inputs...")
