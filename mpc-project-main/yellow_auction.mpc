@@ -61,20 +61,45 @@ def odd_even_merge_sort(arr, start, n):
 # Pro-rata allocation 
 # ------------------------------------------------------------
 def pro_rata_fills(quantities, total_eligible, volume):
-    fills = [sint(0) for _ in range(len(quantities))]
+
+    fills = [sint(0) for _ in range(TOTAL_ORDERS)]
+    is_full = [sint(0) for _ in range(TOTAL_ORDERS)]
+
     allocated = sint(0)
 
+    # evita divisão por zero
     safe_total = total_eligible + (total_eligible == 0)
 
-    for i in range(len(quantities)):
+
+    for i in range(TOTAL_ORDERS):
         fills[i] = (quantities[i] * volume).int_div(safe_total, 32)
         allocated += fills[i]
+        is_full[i] = (fills[i] == quantities[i])
 
     residual = volume - allocated
-    fills[0] += residual
+
+    remaining_total = sint(0)
+
+    remaining_total = residual
+
+    no_more_residual = (remaining_total == 0)
+
+    for i in range(TOTAL_ORDERS):
+
+        for j in range(TOTAL_ORDERS):
+
+            can_receive = (1 - is_full[j])
+            
+            fills[j] = no_more_residual.if_else(fills[j], fills[j] + can_receive)
+
+            is_full[j] = (fills[j] == quantities[j])
+
+            remaining_total = no_more_residual.if_else(remaining_total, remaining_total - can_receive)
+
+            no_more_residual = (remaining_total == 0)
+
 
     return fills
-
 
 # ------------------------------------------------------------
 # CLEARING PRICE
