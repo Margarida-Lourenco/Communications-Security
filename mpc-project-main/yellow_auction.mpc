@@ -4,43 +4,37 @@ from Compiler.library import print_ln
 # ------------------------------------------------------------
 # Dark Auction config
 # ------------------------------------------------------------
-N_ASSETS = 1
-N_PARTIES = 3        
-N_ORDERS = 4      
-TOTAL_ORDERS = N_ORDERS * N_PARTIES 
-VERBOSE = True
+N_ASSETS  = 4
+N_PARTIES = 3
+N_ORDERS  = 4
 
-# ------------------------------------------------------------
-# Determine the next power of 2, for sort's padding
-# ------------------------------------------------------------
+TOTAL_ORDERS = N_ORDERS * N_PARTIES
+
 def next_power_of_two(x):
     r = 1
     while r < x:
         r *= 2
     return r
 
-REAL_PRICES_PER_ASSET = 2 * N_ORDERS * N_PARTIES
+REAL_PRICES_PER_ASSET   = 2 * TOTAL_ORDERS
 SORTED_PRICES_PER_ASSET = next_power_of_two(REAL_PRICES_PER_ASSET)
 
-MAX_PRICE = sint(10**9)
+MAX_PRICE = sint(10**9, size=N_ASSETS)
 
 # ------------------------------------------------------------
-# Batcher's odd-even merge sort
+# Batcher odd-even merge sort
 # ------------------------------------------------------------
 def compare_swap(arr, i, j):
-    swap = arr[i] > arr[j]
-
-    tmp = arr[i]
+    swap   = arr[i] > arr[j]
+    tmp    = arr[i]
     arr[i] = swap.if_else(arr[j], arr[i])
-    arr[j] = swap.if_else(tmp, arr[j])
+    arr[j] = swap.if_else(tmp,    arr[j])
 
 def odd_even_merge(arr, lo, n, r):
     step = r * 2
-
     if step < n:
-        odd_even_merge(arr, lo, n, step)
+        odd_even_merge(arr, lo,     n, step)
         odd_even_merge(arr, lo + r, n, step)
-
         for i in range(lo + r, lo + n - r, step):
             compare_swap(arr, i, i + r)
     else:
@@ -49,7 +43,7 @@ def odd_even_merge(arr, lo, n, r):
 def odd_even_merge_sort_rec(arr, lo, n):
     if n > 1:
         m = n // 2
-        odd_even_merge_sort_rec(arr, lo, m)
+        odd_even_merge_sort_rec(arr, lo,     m)
         odd_even_merge_sort_rec(arr, lo + m, m)
         odd_even_merge(arr, lo, n, 1)
 
@@ -57,258 +51,209 @@ def odd_even_merge_sort(arr, start, n):
     odd_even_merge_sort_rec(arr, start, n)
     return arr
 
-
 # ------------------------------------------------------------
-# Pro-rata allocation 
+# SIMD pro-rata allocation
 # ------------------------------------------------------------
 def pro_rata_fills(quantities, total_eligible, volume):
+    fills   = [sint(0, size=N_ASSETS) for _ in range(TOTAL_ORDERS)]
+    is_full = [sint(0, size=N_ASSETS) for _ in range(TOTAL_ORDERS)]
 
-    fills = [sint(0) for _ in range(TOTAL_ORDERS)]
-    is_full = [sint(0) for _ in range(TOTAL_ORDERS)]
-
-    allocated = sint(0)
-
-    # evita divisão por zero
     safe_total = total_eligible + (total_eligible == 0)
-
+    allocated  = sint(0, size=N_ASSETS)
 
     for i in range(TOTAL_ORDERS):
-        fills[i] = (quantities[i] * volume).int_div(safe_total, 32)
+        fills[i]   = (quantities[i] * volume).int_div(safe_total, 32)
         allocated += fills[i]
         is_full[i] = (fills[i] == quantities[i])
 
-    residual = volume - allocated
+    remaining = volume - allocated
+    done      = (remaining == 0)
 
-    remaining_total = sint(0)
-
-    remaining_total = residual
-
-    no_more_residual = (remaining_total == 0)
-
-    for i in range(TOTAL_ORDERS):
-
+    for _ in range(TOTAL_ORDERS):
         for j in range(TOTAL_ORDERS):
-
-            can_receive = (1 - is_full[j])
-            
-            fills[j] = no_more_residual.if_else(fills[j], fills[j] + can_receive)
-
-            is_full[j] = (fills[j] == quantities[j])
-
-            remaining_total = no_more_residual.if_else(remaining_total, remaining_total - can_receive)
-
-            no_more_residual = (remaining_total == 0)
-
+            can_receive = sint(1, size=N_ASSETS) - is_full[j]
+            increment   = done.if_else(sint(0, size=N_ASSETS), can_receive)
+            fills[j]   += increment
+            is_full[j]  = (fills[j] == quantities[j])
+            remaining  -= increment
+            done        = (remaining == 0)
 
     return fills
 
 # ------------------------------------------------------------
-# CLEARING PRICE
+# SIMD clearing price
 # ------------------------------------------------------------
 def clearing_price(prices, demand, supply, n):
-    print_ln("\nComputing clearing price...")
-    
-    best_volume = sint(0)
-    first_price = sint(0)
-    last_price = sint(0)
-    found = sint(0)
-    
-    # Calculate maximum volume that can be traded at any price point
-    for i in range(n):
-        volume = sint.min(demand[i], supply[i])
-        is_better = volume > best_volume
-        best_volume = is_better.if_else(volume, best_volume)
-    
-    # Calculate which price points achieve this maximum volume and find the first and last such price
-    for i in range(n):
-        volume = sint.min(demand[i], supply[i])
-        is_max = (volume == best_volume)
-        is_first = (found == 0) & is_max # 0 -> false; 1 -> true;
-        first_price = is_first.if_else(prices[i], first_price)
-        last_price = is_max.if_else(prices[i], last_price)
-        found = found + is_max
-    
-    clearing_price = (first_price + last_price)
-    
-    return clearing_price
+    best_volume = sint(0, size=N_ASSETS)
+    first_price = sint(0, size=N_ASSETS)
+    last_price  = sint(0, size=N_ASSETS)
+    found       = sint(0, size=N_ASSETS)
 
+    for i in range(n):
+        volume      = sint.min(demand[i], supply[i])
+        better      = volume > best_volume
+        best_volume = better.if_else(volume, best_volume)
+
+    for i in range(n):
+        volume      = sint.min(demand[i], supply[i])
+        is_max      = (volume == best_volume)
+        is_first    = ((found == 0) & is_max)
+        first_price = is_first.if_else(prices[i], first_price)
+        last_price  = is_max.if_else(prices[i], last_price)
+        found      += is_max
+
+    return first_price + last_price
+
+# ------------------------------------------------------------
+# Pack N_ASSETS scalar sints into one SIMD vector
+# ------------------------------------------------------------
+def pack(scalars):
+    a = Array(N_ASSETS, sint)
+    for k in range(N_ASSETS):
+        a[k] = scalars[k]
+    return a.get_vector()
 
 # ------------------------------------------------------------
 # Main
 # ------------------------------------------------------------
 def main():
-    print_ln("\n=== Dark Auction with MPC ===\n")
-    
-    
-    print_ln("Total orders aggregated: %s", TOTAL_ORDERS)
-    
-    print_ln("Reading inputs...")
-    
-    bid_prices = Array(N_ASSETS * TOTAL_ORDERS, sint)
-    bid_qties = Array(N_ASSETS * TOTAL_ORDERS, sint)
-    ask_prices = Array(N_ASSETS * TOTAL_ORDERS, sint)
-    ask_qties = Array(N_ASSETS * TOTAL_ORDERS, sint)
-    all_prices = Array(N_ASSETS * SORTED_PRICES_PER_ASSET, sint)
+    print_ln("\n=== Dark Auction MPC (SIMD – %s assets in parallel) ===\n",
+             N_ASSETS)
 
-    # Read inputs 
+    # ----------------------------------------------------------
+    # Read inputs
+    # ----------------------------------------------------------
+    raw_bid_p = [[sint(0)] * TOTAL_ORDERS for _ in range(N_ASSETS)]
+    raw_bid_q = [[sint(0)] * TOTAL_ORDERS for _ in range(N_ASSETS)]
+    raw_ask_p = [[sint(0)] * TOTAL_ORDERS for _ in range(N_ASSETS)]
+    raw_ask_q = [[sint(0)] * TOTAL_ORDERS for _ in range(N_ASSETS)]
+
     for asset in range(N_ASSETS):
-        offset_orders = asset * TOTAL_ORDERS
         for party in range(N_PARTIES):
             for order in range(N_ORDERS):
-                idx = offset_orders + order + party * N_ORDERS
-                bid_prices[idx] = sint.get_input_from(party)
-                bid_qties[idx] = sint.get_input_from(party)
-                ask_prices[idx] = sint.get_input_from(party)
-                ask_qties[idx] = sint.get_input_from(party)
-                
-                if VERBOSE:
-                    print_ln("Asset %s Order %s (P%s): bid=%s/%s ask=%s/%s", 
-                             asset, idx % TOTAL_ORDERS, party,
-                             bid_prices[idx].reveal(),
-                             bid_qties[idx].reveal(),
-                             ask_prices[idx].reveal(),
-                             ask_qties[idx].reveal())
-    
-    # Initialize all_prices with bid and ask prices for each asset
-    for asset in range(N_ASSETS): 
-        offset_orders = asset * TOTAL_ORDERS # start index of orders for this asset
-        offset_prices = asset * SORTED_PRICES_PER_ASSET # start index of prices for this asset in all_prices
- 
-        # Fill all_prices with ask and bid prices for this asset
-        # For each asset, the all_prices array will have ask prices followed by bid prices 
-        for i in range(TOTAL_ORDERS):
-            all_prices[offset_prices + i] = ask_prices[offset_orders + i]
-            all_prices[offset_prices + i + TOTAL_ORDERS] = bid_prices[offset_orders + i]
+                idx = order + party * N_ORDERS
+                raw_bid_p[asset][idx] = sint.get_input_from(party)
+                raw_bid_q[asset][idx] = sint.get_input_from(party)
+                raw_ask_p[asset][idx] = sint.get_input_from(party)
+                raw_ask_q[asset][idx] = sint.get_input_from(party)
 
-        for i in range(2 * TOTAL_ORDERS, SORTED_PRICES_PER_ASSET):
-            all_prices[offset_prices + i] = MAX_PRICE
-    
-    # Process each asset separately: sort prices, build demand/supply curves, find clearing price, and compute pro-rata allocations
+    # ----------------------------------------------------------
+    # Pack into SIMD vectors:
+    #   bid_prices[i][k] = asset k, order slot i
+    # ----------------------------------------------------------
+    bid_prices = [pack([raw_bid_p[k][i] for k in range(N_ASSETS)]) for i in range(TOTAL_ORDERS)]
+    bid_qties  = [pack([raw_bid_q[k][i] for k in range(N_ASSETS)]) for i in range(TOTAL_ORDERS)]
+    ask_prices = [pack([raw_ask_p[k][i] for k in range(N_ASSETS)]) for i in range(TOTAL_ORDERS)]
+    ask_qties  = [pack([raw_ask_q[k][i] for k in range(N_ASSETS)]) for i in range(TOTAL_ORDERS)]
+
+    # ----------------------------------------------------------
+    # Build & sort price list
+    # ----------------------------------------------------------
+    all_prices = [sint(0, size=N_ASSETS) for _ in range(SORTED_PRICES_PER_ASSET)]
+
+    for i in range(TOTAL_ORDERS):
+        all_prices[i]                = ask_prices[i]
+        all_prices[i + TOTAL_ORDERS] = bid_prices[i]
+    for i in range(2 * TOTAL_ORDERS, SORTED_PRICES_PER_ASSET):
+        all_prices[i] = MAX_PRICE
+
+    all_prices = odd_even_merge_sort(all_prices, 0, SORTED_PRICES_PER_ASSET)
+
+    # ----------------------------------------------------------
+    # Supply curve
+    # ----------------------------------------------------------
+    supply     = [sint(0, size=N_ASSETS) for _ in range(REAL_PRICES_PER_ASSET)]
+    running_s  = sint(0, size=N_ASSETS)
+    prev_price = sint(0, size=N_ASSETS)
+
+    for i in range(REAL_PRICES_PER_ASSET):
+        p       = all_prices[i]
+        delta_s = sint(0, size=N_ASSETS)
+        for j in range(TOTAL_ORDERS):
+            matched  = (ask_prices[j] == p)
+            delta_s += matched * ask_qties[j]
+        if i == 0:
+            running_s += delta_s
+        else:
+            same      = (p == prev_price)
+            running_s = same.if_else(running_s, running_s + delta_s)
+        supply[i]  = running_s
+        prev_price = p
+
+    # ----------------------------------------------------------
+    # Demand curve
+    # ----------------------------------------------------------
+    demand     = [sint(0, size=N_ASSETS) for _ in range(REAL_PRICES_PER_ASSET)]
+    running_d  = sint(0, size=N_ASSETS)
+    prev_price = sint(0, size=N_ASSETS)
+
+    for i in range(REAL_PRICES_PER_ASSET - 1, -1, -1):
+        p       = all_prices[i]
+        delta_d = sint(0, size=N_ASSETS)
+        for j in range(TOTAL_ORDERS):
+            matched  = (bid_prices[j] == p)
+            delta_d += matched * bid_qties[j]
+        if i == (REAL_PRICES_PER_ASSET - 1):
+            running_d += delta_d
+        else:
+            same      = (p == prev_price)
+            running_d = same.if_else(running_d, running_d + delta_d)
+        demand[i]  = running_d
+        prev_price = p
+
+    # ----------------------------------------------------------
+    # Clearing price
+    # ----------------------------------------------------------
+    cp = clearing_price(
+        all_prices[:REAL_PRICES_PER_ASSET],
+        demand, supply, REAL_PRICES_PER_ASSET
+    )
+
+    # ----------------------------------------------------------
+    # Eligible quantities
+    # ----------------------------------------------------------
+    bid_quantities = [sint(0, size=N_ASSETS) for _ in range(TOTAL_ORDERS)]
+    ask_quantities = [sint(0, size=N_ASSETS) for _ in range(TOTAL_ORDERS)]
+    total_bid      = sint(0, size=N_ASSETS)
+    total_ask      = sint(0, size=N_ASSETS)
+
+    for i in range(TOTAL_ORDERS):
+        eligible_bid      = (2 * bid_prices[i] >= cp)
+        eligible_ask      = (2 * ask_prices[i] <= cp)
+        bid_quantities[i] = eligible_bid * bid_qties[i]
+        ask_quantities[i] = eligible_ask * ask_qties[i]
+        total_bid        += bid_quantities[i]
+        total_ask        += ask_quantities[i]
+
+    volume = sint.min(total_bid, total_ask)
+
+    # ----------------------------------------------------------
+    # Pro-rata fills
+    # ----------------------------------------------------------
+    bid_fills = pro_rata_fills(bid_quantities, total_bid, volume)
+    ask_fills = pro_rata_fills(ask_quantities, total_ask, volume)
+
+    # ----------------------------------------------------------
+    # Reveal results
+    # ----------------------------------------------------------
+    cp_open = cp.reveal()
+
+    for i in range(TOTAL_ORDERS):
+        print_ln("Order %s of asset %s bought %s units", i, asset, bid_fills[i].reveal())
+        print_ln("Order %s of asset %s sold %s units", i, asset, ask_fills[i].reveal())
+
+    print_ln("--- Results ---")
     for asset in range(N_ASSETS):
-        print_ln("\n=== Processing Asset %s ===", asset)
-        
-        offset_orders = asset * TOTAL_ORDERS 
-        offset_prices = asset * SORTED_PRICES_PER_ASSET
-        
-        print_ln("Sorting orders by price for asset %s...", asset)
-        all_prices = odd_even_merge_sort(all_prices, offset_prices, SORTED_PRICES_PER_ASSET)
-
-        # ============================================================
-        # BUILD DEMAND AND SUPPLY CURVES
-        # ============================================================
-        print_ln("Building demand/supply curves for asset %s...", asset)
-        
-        demand = Array(REAL_PRICES_PER_ASSET, sint)
-        supply = Array(REAL_PRICES_PER_ASSET, sint)
-
-        running_s = sint(0)
-        prev_price = sint(0)
-
-        for i in range(REAL_PRICES_PER_ASSET):
-            p = all_prices[offset_prices + i]
-            delta_s = sint(0)
-
-            for j in range(TOTAL_ORDERS):
-                matched = (ask_prices[offset_orders + j] == p)
-                qty = ask_qties[offset_orders + j]
-                delta_s += matched * qty
-
-            if i == 0:
-                running_s += delta_s
-            else:
-                same_price = (p == prev_price)
-                running_s = same_price.if_else(running_s, running_s + delta_s)
-
-            supply[i] = running_s
-            prev_price = p
-
-        running_d = sint(0)
-        prev_price = sint(0)
-
-        for i in range(REAL_PRICES_PER_ASSET - 1, -1, -1):
-            p = all_prices[offset_prices + i]
-            delta_d = sint(0)
-
-            for j in range(TOTAL_ORDERS):
-                matched = (bid_prices[offset_orders + j] == p)
-                qty = bid_qties[offset_orders + j]
-                delta_d += matched * qty
-
-            if i == REAL_PRICES_PER_ASSET - 1:
-                running_d += delta_d
-            else:
-                same_price = (p == prev_price)
-                running_d = same_price.if_else(running_d, running_d + delta_d)
-
-            demand[i] = running_d
-            prev_price = p
-
-        if VERBOSE:
-            print_ln("\nDemand/Supply curve for asset %s:", asset)
-            for i in range(2*TOTAL_ORDERS):
-                print_ln("Price %s: demand=%s supply=%s", 
-                         all_prices[offset_prices + i].reveal(),
-                         demand[i].reveal(),
-                         supply[i].reveal())
-        
-        cp = clearing_price(
-            all_prices[offset_prices:offset_prices + REAL_PRICES_PER_ASSET],
-            demand, supply, REAL_PRICES_PER_ASSET)
-
-        # ============================================================
-        # PRO-RATA ALLOCATIONS
-        # ============================================================
-        print_ln("\nComputing pro-rata allocations for asset %s...", asset)
-        
-        total_eligible_bids = sint(0)
-        total_eligible_asks = sint(0)
-        bid_quantities = [sint(0) for _ in range(TOTAL_ORDERS)]
-        ask_quantities = [sint(0) for _ in range(TOTAL_ORDERS)]
-        
+        int_part = cp_open[asset] // 2
+        frac     = cp_open[asset] % 2
+        vol_open = volume[asset].reveal()
+        print_ln("Asset %s  |  Clearing Price: %s.%s  |  Volume: %s",
+                 asset, int_part, frac * 5, vol_open)
         for i in range(TOTAL_ORDERS):
-            is_eligible_bid = (2*bid_prices[offset_orders + i] >= cp)
-            is_eligible_ask = (2*ask_prices[offset_orders + i] <= cp)
-            
-            total_eligible_bids += is_eligible_bid * bid_qties[offset_orders + i]
-            total_eligible_asks += is_eligible_ask * ask_qties[offset_orders + i]
-            bid_quantities[i] = is_eligible_bid * bid_qties[offset_orders + i]
-            ask_quantities[i] = is_eligible_ask * ask_qties[offset_orders + i]
-        
-        volume_to_fill = sint.min(total_eligible_bids, total_eligible_asks)
-        
-        bid_fills = pro_rata_fills(bid_quantities, total_eligible_bids, volume_to_fill)
-        ask_fills = pro_rata_fills(ask_quantities, total_eligible_asks, volume_to_fill)
-        
-        # Detailed per-order pro-rata debug prints
-        if VERBOSE:
-            print_ln("\nPro-rata allocations (detailed):")
-            print_ln("BIDS:")
-            for i in range(TOTAL_ORDERS):
-                is_full = (bid_fills[i] == bid_quantities[i])  # secret bit, no .reveal() yet
-                print_ln("bid@%s  fill : %s  full=%s",
-                        bid_prices[offset_orders + i].reveal(),
-                        bid_fills[i].reveal(),
-                        is_full.reveal())  # prints 1 or 0
-
-            print_ln("ASKS:")
-            for i in range(TOTAL_ORDERS):
-                is_full = (ask_fills[i] == ask_quantities[i])  # same pattern
-                print_ln("ask@%s  fill : %s  full=%s",
-                        ask_prices[offset_orders + i].reveal(),
-                        ask_fills[i].reveal(),
-                        is_full.reveal())  # prints 1 or 0
-
-        # Final summary prints for this asset
-        for i in range(TOTAL_ORDERS):
-            print_ln("Order %s of asset %s bought %s units", i, asset, bid_fills[i].reveal())
-            print_ln("Order %s of asset %s sold %s units", i, asset, ask_fills[i].reveal())
-            
-        print_ln("\n=== Asset %s Summary ===", asset)
-
-        cp_revealed = cp.reveal()
-        int_part = cp_revealed // 2
-        remainder = cp_revealed % 2
-        print_ln("Clearing Price: %s.%s", int_part, remainder * 5)
-        print_ln("Total Volume: %s", volume_to_fill.reveal())
+            # bid_fills[i] e ask_fills[i] são vetores de tamanho N_ASSETS
+            # .reveal() devolve lista — indexar por asset para obter o valor certo
+            bf = bid_fills[i].reveal()
+            af = ask_fills[i].reveal()
+            print_ln("  Order %s | bought: %s | sold: %s", i, bf[asset], af[asset])
 
 main()
