@@ -1,6 +1,7 @@
 from Compiler.types import sint, Array
 from Compiler.library import print_ln
 
+program.use_edabit(True)
 # ------------------------------------------------------------
 # Dark Auction config
 # ------------------------------------------------------------
